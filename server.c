@@ -28,18 +28,8 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #define ERROR(msg) {fprintf(stderr,msg); fprintf(stderr,"\n"); exit(-1);}
 
 
-#include <sys/time.h>
 int
 main(int argc, char *argv[]) {
-
-	// struct timeval t,tst;
-	// gettimeofday(&tst,NULL);
-	// while(true) {
-	// 	gettimeofday(&t,NULL);
-	// 	sleep(1);
-	// 	printf("time diff is: %ld\n", t.tv_sec - tst.tv_sec);
-	// }
-
 
 	unsigned short port = -1;
 	char *mountdir = NULL;
@@ -78,12 +68,16 @@ main(int argc, char *argv[]) {
 	else {
 
 		char buf[128];
-		long src_addr;
+		char str_addr[128];
+		struct sockaddr_in sender;
+
 		unsigned int msglen;
-		if ((msglen = netRecv(buf,128,&src_addr,100000)) > 0) 
+		if ((msglen = netRecv(buf,128,&sender,100000)) > 0) 
 		{
 			buf[msglen] = '\0';
-			printf("msg: [%s], len:[%d] received from: [%lx] \n",buf,msglen,src_addr);
+			//inet_ntop(AF_INET, &sender, str_addr, INET_ADDRSTRLEN);
+			printf("msg: [%s], len:[%d] received from: [%s] \n",buf,msglen,
+																										inet_ntoa(sender.sin_addr));
 		}
 		else
 			printf("no income received.\n");

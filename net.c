@@ -1,6 +1,7 @@
 #include <sys/types.h> 
 #include <sys/socket.h> /* for socket(), connect(), send(), and recv() */
 #include <arpa/inet.h>  /* for sockaddr_in and inet_addr() */
+#include <netinet/in.h>
 #include <net.h>
 #include <stdio.h>
 #include <errno.h>
@@ -33,6 +34,20 @@ struct ip_mreq mreq;
 struct sockaddr_in sdest;
 fd_set fdmask;
 int droprate;
+
+#define MICROSEC_IN_SEC 1000000
+struct timeval time_diff(struct timeval ta, struct timeval tb)
+{
+	struct timeval diff;
+	diff.tv_sec = ta.tv_sec - tb.tv_sec;
+	if (ta.tv_usec > tb.tv_usec) {
+		diff.tv_usec = ta.tv_usec - tb.tv_usec;
+	} else {
+		diff.tv_usec = ta.tv_usec - tb.tv_usec + MICROSEC_IN_SEC;
+		diff.tv_sec--;
+	}
+	return diff;
+}
 
 
 int
@@ -113,11 +128,9 @@ int netSend(void *buf, size_t n)
 }
 
 #define MAX
-size_t netRecv(void *buf, size_t n, long *src_addr, int timeout_ms)
+size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, int timeout_ms)
 {
 
-	struct sockaddr_in ssrc;
-	ssrc.sin_addr.s_addr = 0;
 	unsigned int slen = 0;
 	ssize_t msglen = 0;
 	
@@ -125,31 +138,30 @@ size_t netRecv(void *buf, size_t n, long *src_addr, int timeout_ms)
 	to_wait.tv_sec = timeout_ms/1000;
 	to_wait.tv_usec = (timeout_ms % 1000)*1000;
 
-	struct timeval tlast;
-	gettimeofday(&tlast,NULL);
+	struct timeval last;
+	gettimeofday(&last,NULL);
 
 	while (true) {
+<<<<<<< Updated upstream
 		printf("sec: %ld, usec: %ld\n", to_wait.tv_sec, to_wait.tv_usec);
 		//if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
+=======
+		if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
+>>>>>>> Stashed changes
 			int r = rand() %100;
+			printf("to_wait.tv_sec: %ld, to_wait.tv_usec: %ld\n", to_wait.tv_sec, 
+																														to_wait.tv_usec);
 			printf("r: %d, droprate: %d\n",r,droprate);
-			int templen = recvfrom(sid, buf,n, 0,(struct sockaddr *)&ssrc,&slen);
+			int templen = recvfrom(sid, buf,n, 0,(struct sockaddr *)sender,&slen);
 			if (r > droprate) {
 				msglen = templen;
 				break;
-			} else {
-				struct timeval now;
-				gettimeofday(&now,NULL);
-				to_wait.tv_sec = to_wait.tv_sec - (now.tv_sec - tlast.tv_sec);
-				to_wait.tv_usec = to_wait.tv_usec - (now.tv_usec - tlast.tv_usec);
-				memcpy(&tlast,&now,sizeof(struct timeval));
 			}
 		//} else {
 		//	break;
 		//}
 	}
 
-	if (src_addr) *src_addr = ntohl(ssrc.sin_addr.s_addr);
 	return msglen;
 }
 
