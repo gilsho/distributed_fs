@@ -31,9 +31,9 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 int
 main(int argc, char *argv[]) {
 
-	unsigned short port = -1;
+	unsigned short port = 41056;
 	char *mountdir = NULL;
-	int drop = 0;
+	int drop = 10;
 
 	for (int i=1; i<argc-1;i++) 
 	{
@@ -70,14 +70,16 @@ main(int argc, char *argv[]) {
 		char buf[128];
 		char str_addr[128];
 		struct sockaddr_in sender;
+		memset(&sender,0,sizeof(struct sockaddr_in));
+		//sender.sin_family = AF_INET;
 
 		unsigned int msglen;
 		if ((msglen = netRecv(buf,128,&sender,100000)) > 0) 
 		{
 			buf[msglen] = '\0';
-			//inet_ntop(AF_INET, &sender, str_addr, INET_ADDRSTRLEN);
+			inet_ntop(AF_INET, &(sender.sin_addr), str_addr, INET_ADDRSTRLEN);
 			printf("msg: [%s], len:[%d] received from: [%s] \n",buf,msglen,
-																										inet_ntoa(sender.sin_addr));
+																													str_addr);
 		}
 		else
 			printf("no income received.\n");

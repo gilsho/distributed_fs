@@ -131,7 +131,7 @@ int netSend(void *buf, size_t n)
 size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, int timeout_ms)
 {
 
-	unsigned int slen = 0;
+	socklen_t slen = sizeof(struct sockaddr);
 	ssize_t msglen = 0;
 	
 	struct timeval to_wait;
@@ -142,12 +142,7 @@ size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, int timeout_ms)
 	gettimeofday(&last,NULL);
 
 	while (true) {
-<<<<<<< Updated upstream
-		printf("sec: %ld, usec: %ld\n", to_wait.tv_sec, to_wait.tv_usec);
-		//if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
-=======
 		if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
->>>>>>> Stashed changes
 			int r = rand() %100;
 			printf("to_wait.tv_sec: %ld, to_wait.tv_usec: %ld\n", to_wait.tv_sec, 
 																														to_wait.tv_usec);
@@ -157,9 +152,9 @@ size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, int timeout_ms)
 				msglen = templen;
 				break;
 			}
-		//} else {
-		//	break;
-		//}
+		} else {
+			break;
+		}
 	}
 
 	return msglen;
