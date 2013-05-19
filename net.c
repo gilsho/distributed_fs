@@ -130,7 +130,7 @@ size_t netRecv(void *buf, size_t n, long *src_addr, int timeout_ms)
 
 	while (true) {
 		printf("sec: %ld, usec: %ld\n", to_wait.tv_sec, to_wait.tv_usec);
-		if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
+		//if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
 			int r = rand() %100;
 			printf("r: %d, droprate: %d\n",r,droprate);
 			int templen = recvfrom(sid, buf,n, 0,(struct sockaddr *)&ssrc,&slen);
@@ -144,9 +144,9 @@ size_t netRecv(void *buf, size_t n, long *src_addr, int timeout_ms)
 				to_wait.tv_usec = to_wait.tv_usec - (now.tv_usec - tlast.tv_usec);
 				memcpy(&tlast,&now,sizeof(struct timeval));
 			}
-		} else {
-			break;
-		}
+		//} else {
+		//	break;
+		//}
 	}
 
 	if (src_addr) *src_addr = ntohl(ssrc.sin_addr.s_addr);
