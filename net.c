@@ -2,7 +2,7 @@
 #include <sys/socket.h> /* for socket(), connect(), send(), and recv() */
 #include <arpa/inet.h>  /* for sockaddr_in and inet_addr() */
 #include <netinet/in.h>
-#include <net.h>
+#include "net.h"
 #include <stdio.h>
 #include <errno.h>
 #include <sys/uio.h>
@@ -18,9 +18,9 @@
 #include <sys/time.h>
 #include <assert.h>
 #include <stdbool.h>
+#include "utils.h"
 
 
-#define ERROR(msg) {fprintf(stderr,msg "\n"); return -1;}
 #define MULTICAST_GROUP	 0xe0010101
 
 struct ip_mreq
@@ -32,30 +32,15 @@ struct ip_mreq
 int sid;
 struct ip_mreq mreq;  
 struct sockaddr_in sdest;
-fd_set fdmask;
-int droprate;
-
-#define MICROSEC_IN_SEC 1000000
-struct timeval time_diff(struct timeval ta, struct timeval tb)
-{
-	struct timeval diff;
-	diff.tv_sec = ta.tv_sec - tb.tv_sec;
-	if (ta.tv_usec > tb.tv_usec) {
-		diff.tv_usec = ta.tv_usec - tb.tv_usec;
-	} else {
-		diff.tv_usec = ta.tv_usec - tb.tv_usec + MICROSEC_IN_SEC;
-		diff.tv_sec--;
-	}
-	return diff;
-}
+int packetLoss;
 
 
 int
-netInit(unsigned short port, int drop)
+netInit(unsigned short portNum, int packetLoss_)
 {	
 
-		droprate = drop;
-		printf("setting drop rate to %d\n",droprate);
+		packetLoss = packetLoss_;
+		printf("setting packet loss rate to %d\n",packetLoss);
 
 		/** Allocate a UDP socket and set the multicast options */
 		if ((sid = socket(AF_INET,SOCK_DGRAM, 0)) < 0) 
@@ -65,17 +50,18 @@ netInit(unsigned short port, int drop)
 		/** multicast group information */
 		struct sockaddr_in shost;
 		shost.sin_family = AF_INET;
-		shost.sin_port = htons(port);
+		shost.sin_port = htons(portNum);
 		shost.sin_addr.s_addr = htonl(INADDR_ANY); 
 
 		sdest.sin_family = AF_INET;
-		sdest.sin_port = htons(port);
+		sdest.sin_port = htons(portNum);
 		sdest.sin_addr.s_addr = htonl(MULTICAST_GROUP); 
 
 
 		/** bind the UDP socket to the mcast address to recv messages 
 			  from the group */
-		if((bind(sid,(struct sockaddr *) &shost, sizeof(shost))== -1)) ERROR("error in bind");
+		if((bind(sid,(struct sockaddr *) &shost, sizeof(shost))== -1)) 
+						ERROR("error in bind");
 
 
 		/** allow multicast datagrams to be transmitted to any site anywhere 
@@ -98,8 +84,6 @@ netInit(unsigned short port, int drop)
 
 
 		/* set file descriptor mask for select statement */
-		FD_ZERO(&fdmask);
-		FD_SET(sid, &fdmask);
 
 		return 0;
  }
@@ -128,30 +112,37 @@ int netSend(void *buf, size_t n)
 }
 
 #define MAX
-size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, int timeout_ms)
+size_t netRecv(void *buf, size_t n, struct sockaddr_in *sender, 
+							 struct timeval deadline)
 {
 
 	socklen_t slen = sizeof(struct sockaddr);
 	ssize_t msglen = 0;
-	
-	struct timeval to_wait;
-	to_wait.tv_sec = timeout_ms/1000;
-	to_wait.tv_usec = (timeout_ms % 1000)*1000;
 
-	struct timeval last;
-	gettimeofday(&last,NULL);
+	struct timeval tstart;
+	gettimeofday(&tstart,NULL);
+	struct timeval to_wait = time_diff(deadline,tstart);
+
+	fd_set fdmask;
+	FD_ZERO(&fdmask);
+	FD_SET(sid, &fdmask);
 
 	while (true) {
 		if (select(sid+1,&fdmask,NULL,NULL,&to_wait) > 0) {
 			int r = rand() %100;
-			printf("to_wait.tv_sec: %ld, to_wait.tv_usec: %ld\n", to_wait.tv_sec, 
-																														to_wait.tv_usec);
-			printf("r: %d, droprate: %d\n",r,droprate);
-			int templen = recvfrom(sid, buf,n, 0,(struct sockaddr *)sender,&slen);
-			if (r > droprate) {
+
+			struct sockaddr_in s;
+			int templen = recvfrom(sid, buf,n, 0,(struct sockaddr *)&s,&slen);
+			char str_addr[INET_ADDRSTRLEN];
+			*str_addr = '\0';
+			inet_ntop(AF_INET, &(s.sin_addr), str_addr, INET_ADDRSTRLEN);
+			printf("received [%d] bytes from [%s]\n",templen, str_addr);
+			if (r > packetLoss && valid_msg(buf)) {
 				msglen = templen;
+				if (sender) memcpy(sender, &s, sizeof(struct sockaddr_in));
 				break;
 			}
+			printf("dropping on floor...\n");
 		} else {
 			break;
 		}

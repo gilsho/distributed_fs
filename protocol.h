@@ -1,43 +1,94 @@
 
+#ifndef __PROTOCOL_H__
+#define __PROTOCOL_H__
+
+#include <stddef.h>
+#include <stdbool.h>
+
 enum msg_type_t {
-	msg_discover,
-	msg_discover_ack,
-	msg_open,
-	msg_open_ack,
-	msg_write_block,
-	msg_try_commit,
-	msg_try_commit_fail,
-	msg_try_commit_success,
-	msg_commit,
-	msg_commit_success,
-	msg_commit_fail
+	MsgDiscover,
+	MsgDiscoverAck,
+	MsgOpen,
+	MsgOpenFail,
+	MsgOpenSuccess,
+	MsgWrite,
+	MsgTryCommit,
+	MsgTryCommitFail,
+	MsgTryCommitSuccess,
+	MsgCommit,
+	MsgCommitFail,
+	MsgCommitSuccess,
+	MsgAbort
 };
 
-
-
-struct repfs_msg {
-	msg_type_t	msg_type;
-	int len;
-	int checksum;
+struct replfs_msg {
+	enum msg_type_t	msg_type;
+	size_t len;
+	int cksum;
 };
 
-struct repfs_msg_open {
+struct replfs_msg_open_long {
 	char filename[128];
-	int fid;
+	int fd;
 };
 
-struct replfs_msg_open_ack {
-	int fid;
+struct replfs_msg_open {
+	int fd;
 };
 
 struct replfs_msg_write {
-	int fid;
+	int fd;
 	int offset;
-	int len;
+	int wlen;
 	int wid;
 };
 
-struct repfs_commit {
-	int fid;
+struct replfs_msg_commit {
+	int fd;
+	int from_wid;
+	int to_wid;
 };
 
+struct replfs_msg_commit_long {
+	int fd;
+	int n;
+	int data[];
+};
+
+
+
+int checksum(struct replfs_msg *msg);
+
+void *get_payload(struct replfs_msg *msg);
+
+bool valid_msg(struct replfs_msg *msg);
+
+void send_discover();
+
+void send_discover_ack();
+
+void send_open(char *filename, int fd);
+
+void send_open_fail(int fd);
+
+void send_open_success(int fd);
+
+void send_write(int fd, int offset, int wlen, void *data, int wid);
+
+void send_try_commit(int fd, int from_wid, int to_wid);
+
+void send_try_commit_fail(int fd, int wids[], int n);
+
+void send_try_commit_success(int fd, int from_wid, int to_wid);
+
+void send_commit(int fd, int from_wid, int to_wid);
+
+void send_commit_success(int fd, int from_wid, int to_wid);
+
+void send_commit_fail(int fd, int from_wid, int to_wid);
+
+void send_abort(int fd, int from_wid, int to_wid);
+
+
+
+#endif

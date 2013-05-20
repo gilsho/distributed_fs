@@ -22,18 +22,153 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <limits.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <unistd.h>
+
 #include "net.h"
+#include "utils.h"
+#include "protocol.h"
+#include "clist.h"
+
+
 
 #define MAX_ARG_LEN 100
-#define ERROR(msg) {fprintf(stderr,msg); fprintf(stderr,"\n"); exit(-1);}
+#define DEFAULT_PORT 41056
+#define MAX_IDLE_TIME 24*60
+#define MAX_FILE_LEN 128
 
+struct remote_file {
+	int remote_fd;
+	int local_fd;
+	CList *cl;
+	//struct sockaddr_in *owner;
+};
+
+struct remote_file rf;
+char *mountdir = NULL;
+
+void 
+process_discover(struct sockaddr_in client)
+{
+	printf("discover msg received.\n");
+	send_discover_ack();
+}
+
+
+void 
+process_open(struct replfs_msg *msg, struct sockaddr_in client) 
+{ 
+	printf("processing open msg...\n");
+	struct replfs_msg_open_long *payload = 
+										(struct replfs_msg_open_long *) get_payload(msg);
+	if (rf.remote_fd == -1)		 {
+		//if ((rf.local_fd = open(payload->filename,
+		// 										  O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR)) > 0) {
+			rf.remote_fd = payload->fd;
+			CListInit(rf.cl);
+			printf("sending open success\n");
+			send_open_success(payload->fd);
+			return;
+		//}
+	}
+	printf("sending open fail\n");
+	send_open_fail(payload->fd);
+
+
+}
+
+void process_write(struct replfs_msg *msg, struct sockaddr_in client) 
+{
+	printf("processing write msg...\n"); 
+}
+
+void process_try_commit(struct replfs_msg *msg, struct sockaddr_in client) 
+{
+	printf("processing try-commit msg...\n"); 
+}
+
+void process_commit(struct replfs_msg *msg, struct sockaddr_in client) 
+{
+	printf("processing commit msg...\n"); 
+}
+
+
+void
+process_msg(struct replfs_msg * msg, struct sockaddr_in client)
+{
+	printf("msg received.\n");
+	switch(msg->msg_type) {
+
+		case MsgDiscover:
+			process_discover(client);
+			break;
+		case MsgDiscoverAck:
+			//do nothing
+			break;
+		case MsgOpen:
+			process_open(msg,client);
+			break;
+		case MsgOpenSuccess:
+			//do nothing
+			break;
+		case MsgOpenFail:
+			//do nothing
+			break;
+		case MsgWrite:
+			process_write(msg,client);
+			break;
+		case MsgTryCommit:
+			process_try_commit(msg,client);
+			break;
+		case MsgTryCommitFail:
+			//do nothing
+			break;
+		case MsgTryCommitSuccess:
+			//do nothing
+			break;
+		case MsgCommit:
+			process_commit(msg,client);
+			break;
+		case MsgCommitSuccess:
+			//do nothing
+			break;
+		case MsgCommitFail:
+			//do nothing
+			break;
+		default:
+			printf("unknown msg type.\n");
+			break;
+	}
+}
+
+void
+run_server()
+{
+	printf("server running...\n");
+
+	struct sockaddr_in client;
+	struct timeval deadline;
+	gettimeofday(&deadline,NULL);
+	deadline.tv_sec += MAX_IDLE_TIME;
+
+	char buf[BUFFER_SIZE];
+	while (true) {
+			netRecv(buf, BUFFER_SIZE, &client,deadline);
+			process_msg((struct replfs_msg *) buf, client);
+			deadline.tv_sec += MAX_IDLE_TIME;
+			//extension: send keep alive message
+	}
+}
 
 int
 main(int argc, char *argv[]) {
 
-	unsigned short port = 41056;
-	char *mountdir = NULL;
-	int drop = 10;
+	unsigned short port = DEFAULT_PORT;
+	int drop = 0;
 
 	for (int i=1; i<argc-1;i++) 
 	{
@@ -55,12 +190,21 @@ main(int argc, char *argv[]) {
 
 	}
 
+	/* empty file */
+	rf.remote_fd = -1;
+	rf.local_fd = -1;
+	rf.cl = NULL;
+
+
 	printf("launching file server...\n");
 	printf("port: %d, mountdir: %s, drop: %d\n", port, mountdir, drop);
 
-	netInit(port,drop);
+	if (netInit(port,drop) )
+		ERROR("unable to connect to network.\n");
 
-	/************************/
+	run_server();
+
+	/************************
 	char *msg = "hello world!";
 	if (drop == 1) {
 		netSend(msg,strlen(msg));
@@ -74,7 +218,10 @@ main(int argc, char *argv[]) {
 		//sender.sin_family = AF_INET;
 
 		unsigned int msglen;
-		if ((msglen = netRecv(buf,128,&sender,100000)) > 0) 
+		struct timeval deadline;
+		gettimeofday(&deadline,NULL);
+		deadline.tv_sec += 100;
+		if ((msglen = netRecv(buf,128,&sender,deadline)) > 0) 
 		{
 			buf[msglen] = '\0';
 			inet_ntop(AF_INET, &(sender.sin_addr), str_addr, INET_ADDRSTRLEN);
@@ -84,7 +231,7 @@ main(int argc, char *argv[]) {
 		else
 			printf("no income received.\n");
 	}
-	/*************************/
+	*************************/
 
 	printf("closing file server...\n");
 

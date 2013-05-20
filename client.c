@@ -5,16 +5,161 @@
 /* Spring 2013	*/
 /****************/
 
-#define DEBUG
-
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <unistd.h>
 #include <assert.h>
+#include <string.h>
+#include <stdlib.h>
+#include "client.h"
+#include <netinet/in.h>
 
-#include <client.h>
+#include "utils.h"
+#include "net.h"
+#include "protocol.h"
+#include "cmap.h"
+#include "cvector.h"
+#include "utils.h"
+
+#define TIMEOUT_CONNECT 1000
+#define TIMEOUT_OPEN    1000
+#define RETRY_CONNECT 5
+#define RETRY_OPEN    5
+
+CVector *servers;
+//CMap *mapserv;
+
+
+void 
+print_servers()
+{
+  printf("server list:\n");
+  printf("----------------------------------\n");
+  for (int i=0; i<CVectorCount(servers); i++) {
+    char str[ADDR_STR_SIZE];
+    inet_ntop(AF_INET, 
+              &(((struct sockaddr_in *)CVectorNth(servers,i))->sin_addr), 
+              str, INET_ADDRSTRLEN);
+    printf("[%2d] %s\n",i,str);
+  }
+  printf("----------------------------------\n");
+}
+
+int 
+sockcmp(const void *a, const void *b)
+{
+  struct sockaddr_in *sa = (struct sockaddr_in *)a;
+  struct sockaddr_in *sb = (struct sockaddr_in *)b;
+  if (sa->sin_addr.s_addr > sb->sin_addr.s_addr)
+    return 1;
+  else if (sa->sin_addr.s_addr < sb->sin_addr.s_addr)
+    return -1;
+  return 0;
+}
+
+struct timeval 
+compute_deadline(struct timeval now, long timeout_ms)
+{
+  struct timeval timeout;
+  timeout.tv_sec = timeout_ms / MILLISEC_IN_SEC;
+  timeout.tv_usec = (timeout_ms % MILLISEC_IN_SEC) * MICROSEC_IN_MILLISEC;
+  return time_sum(now,timeout);
+}
+
+int 
+locate_servers(int numServers, long timeout_ms)
+{
+  char buf[BUFFER_SIZE];
+  struct replfs_msg *msg;
+
+  /* send discover message */
+  send_discover();
+
+  /* gather responses */
+  struct timeval deadline,now;
+  gettimeofday(&now,NULL);
+  deadline = compute_deadline(now,timeout_ms);
+
+  struct sockaddr_in s;
+  while (true)
+  {
+    printf("currently found %d servers.\n",CVectorCount(servers));
+    gettimeofday(&now,NULL);
+    if (CVectorCount(servers) >= numServers) {
+      CVectorSort(servers, sockcmp);
+      return NormalReturn;
+    }
+    
+    if (time_diff_ms(deadline,now) < 1) {
+      return ErrorReturn;
+    }
+    
+    if (netRecv(buf, BUFFER_SIZE, &s, deadline) > 0) {
+      msg = (struct replfs_msg *) buf;
+      if (msg->msg_type == MsgDiscoverAck) 
+        if (CVectorSearch(servers,&s,(CVectorCmpElemFn) sockcmp,0,false) == -1)
+          CVectorAppend(servers,&s);
+    }
+
+  } 
+
+  //execution thread shouldn't get here
+  return ErrorReturn;
+}
+
+int 
+open_remote(int fd, char *filename, long timeout_ms)
+{
+  char buf[BUFFER_SIZE];
+  struct replfs_msg *msg;
+  struct replfs_msg_open *payload;
+
+  CMap *responders = CMapCreate(sizeof(struct sockaddr_in), sizeof(bool), 
+                                10, sockcmp, NULL);
+
+  /* send open */
+  send_open(filename, fd);
+
+  /* collect reponses */
+  struct timeval deadline,now;
+  gettimeofday(&now,NULL);
+  deadline = compute_deadline(now,timeout_ms);
+
+  struct sockaddr_in s;
+  while (true)
+  {
+    printf("%d servers reponded.\n",CMapCount(responders));
+    gettimeofday(&now,NULL);
+    if (CMapCount(responders) >= CVectorCount(servers)) {
+      return NormalReturn;
+    }
+    
+    if (time_diff_ms(deadline,now) < 1) {
+      return ErrorReturn;
+    }
+    
+    if (netRecv(buf, BUFFER_SIZE, &s, deadline) > 0) {
+      msg = (struct replfs_msg *) buf;
+      payload = (struct replfs_msg_open *)get_payload(msg);
+      printf("payload->fd: %d, fd: %d, msg type: %d, MsgOpenSuccess: %d\n",
+              payload->fd, fd, msg->msg_type, MsgOpenSuccess);
+      if (msg->msg_type == MsgOpenSuccess && 
+          payload->fd == fd) {
+          printf("recieved open success\n");
+          if(CVectorSearch(servers,&s,(CVectorCmpElemFn) sockcmp,0,false) != -1) {
+              bool response = true;
+              CMapPut(responders, &s,&response);
+        } else if (msg->msg_type == MsgOpenFail && payload->fd == fd) {
+          return ErrorReturn;
+        }
+      }
+    }
+  }
+  //execution thread shouldn't get here
+  return ErrorReturn;
+}
 
 /* ------------------------------------------------------------------ */
 /*
@@ -38,6 +183,21 @@ InitReplFs( unsigned short portNum, int packetLoss, int numServers ) {
   /****************************************************/
   /* Initialize network access, local state, etc.     */
   /****************************************************/
+  if (netInit(portNum,packetLoss))
+    ERROR("connection failed");
+
+  servers = CVectorCreate(sizeof(struct sockaddr_in), numServers,NULL);
+
+  int success = -1;
+  for (int i=0; i<RETRY_CONNECT; i++)
+    if ((success = locate_servers(numServers,TIMEOUT_CONNECT)) == NormalReturn)
+      break;
+
+  if (success != NormalReturn)
+    ERROR("unable to locate servers");
+
+  printf("connection established.\n");
+  print_servers();
 
   return( NormalReturn );  
 }
@@ -60,18 +220,19 @@ OpenFile( char * fileName ) {
 
   ASSERT( fileName );
 
-#ifdef DEBUG
   printf( "OpenFile: Opening File '%s'\n", fileName );
-#endif
 
   fd = open( fileName, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR );
 
-#ifdef DEBUG
   if ( fd < 0 )
-    perror( "OpenFile" );
-#endif
+    ERROR("unable to open the file locally");
 
-  return( fd );
+  if (open_remote(fd,fileName,TIMEOUT_OPEN) == ErrorReturn)
+    ERROR("unable to open file remotely");
+
+  printf("file opened successfully\n");
+
+  return fd;
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,6 +363,11 @@ CloseFile( int fd ) {
 
 /* ------------------------------------------------------------------ */
 
-
+void 
+CloseReplFs()
+{
+  netClose();
+  CVectorDispose(servers);
+}
 
 

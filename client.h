@@ -5,6 +5,10 @@
 /* Spring 2013	*/
 /****************/
 
+
+#ifndef __CLIENT_H__
+#define __CLIENT_H__
+
 enum {
   NormalReturn = 0,
   ErrorReturn = -1,
@@ -42,6 +46,8 @@ extern int CloseFile(int fd);
 
 /* ------------------------------------------------------------------ */
 
+
+#endif
 
 
 
