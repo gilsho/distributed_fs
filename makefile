@@ -11,9 +11,9 @@ INCDIR	= -I$(H)
 LIBDIRS = -L$(C_DIR)
 LIBS    = -lclientReplFs
 
-CLIENT_OBJECTS = client.o net.o cvector.o cmap.o utils.o protocol.o clist.o
+CLIENT_OBJECTS = client.o net.o cvector.o utils.o protocol.o
 
-all:	appl server test
+all:	cls appl server test
 
 appl:	appl.o $(C_DIR)/libclientReplFs.a
 	$(CCF) -o appl appl.o $(LIBDIRS) $(LIBS)
@@ -34,14 +34,17 @@ $(C_DIR)/libclientReplFs.a:	$(CLIENT_OBJECTS)
 #server.o: server.c
 # $(CCF) -c $(INCDIR) server.c
 
-server: server.o client.o net.o cvector.o cmap.o utils.o protocol.o clist.o
-	$(CCF) $(INCDIR) -o replFsServer server.o net.o utils.o protocol.o clist.o
+server: server.o client.o net.o cvector.o utils.o protocol.o
+	$(CCF) $(INCDIR) -o replFsServer server.o net.o utils.o protocol.o cvector.o
 
 test: test.o $(C_DIR)/libclientReplFs.a
 	$(CCF) $(INCDIR) -o tst test.o $(LIBDIRS) $(LIBS)
 
 .o: utils.c
 	$(CCF) $(INCDIR) $@.c -o $@.o utils.o
+
+cls:
+	clear;
 
 clean:
 	rm -f appl replFsServer *.o *.a tst 

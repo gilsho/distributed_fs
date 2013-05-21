@@ -108,6 +108,23 @@ void CVectorInsert(CVector *cv, const void *elemAddr, int atIndex)
    cv->numUsed++;
 }
 
+void CVectorRemoveDuplicate(CVector *cv, CVectorCmpElemFn cmpfn) 
+{
+  VerifyMagic(cv, __FUNCTION__);
+  if (cv->numUsed < 2)
+    return;
+  CVectorSort(cv, cmpfn);
+  
+  for (int i=1; i<cv->numUsed;) {
+    void *a = NthAddress(cv,i-1);
+    void *b = NthAddress(cv,i);
+    if (!cmpfn(a,b))
+      CVectorRemove(cv,i);
+    else
+      i++;
+  } 
+}
+
 void CVectorAppend(CVector *cv, const void *elemAddr)
 {
    VerifyMagic(cv, __FUNCTION__);
@@ -155,4 +172,17 @@ void *CVectorNext(CVector *cv, void *prev)
     int index = ((char *)prev - (char *)cv->elems)/cv->elemSize;
     return (index == cv->numUsed - 1? NULL: (char *)prev + cv->elemSize);
 }
-    
+
+
+void *CVectorToArray(CVector *cv, int *n)
+{
+  int len = cv->elemSize * cv->numUsed;
+  void *arr = malloc(len);
+  memcpy(arr,cv->elems,len);
+  if (n) *n = cv->numUsed;
+  return arr;
+}
+  
+
+
+

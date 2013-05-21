@@ -32,7 +32,7 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #include "net.h"
 #include "utils.h"
 #include "protocol.h"
-#include "clist.h"
+#include "cvector.h"
 
 
 
@@ -41,15 +41,12 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #define MAX_IDLE_TIME 24*60
 #define MAX_FILE_LEN 128
 
-struct remote_file {
-	int remote_fd;
-	int local_fd;
-	CList *cl;
-	//struct sockaddr_in *owner;
-};
+int remote_fd;
+char filepath[2*MAX_FILE_LEN];
+CVector *wlog;
+//struct sockaddr_in *owner;
 
-struct remote_file rf;
-char *mountdir = NULL;
+char mountdir[MAX_FILE_LEN];
 
 void 
 process_discover(struct sockaddr_in client)
@@ -65,30 +62,133 @@ process_open(struct replfs_msg *msg, struct sockaddr_in client)
 	printf("processing open msg...\n");
 	struct replfs_msg_open_long *payload = 
 										(struct replfs_msg_open_long *) get_payload(msg);
-	if (rf.remote_fd == -1)		 {
-		//if ((rf.local_fd = open(payload->filename,
-		// 										  O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR)) > 0) {
-			rf.remote_fd = payload->fd;
-			CListInit(rf.cl);
+	remote_fd = -1; //REMOVE ME!									
+	if (remote_fd == -1)		 {
+		//create the file
+		strcpy(filepath,mountdir);
+		strcat(filepath,payload->filename);
+		int local_fd = open(payload->filename,
+		 										  O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR);
+		if (local_fd > 0) {
+			close(local_fd);
+			remote_fd = payload->fd;
+			wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
 			printf("sending open success\n");
 			send_open_success(payload->fd);
-			return;
-		//}
+		} else {
+			printf("sending open fail\n");
+			send_open_fail(payload->fd);
+		}
 	}
-	printf("sending open fail\n");
-	send_open_fail(payload->fd);
 
+}
+
+void
+process_close(struct replfs_msg *msg, struct sockaddr_in client)
+{
+	printf("processing close msg...\n");
+	struct replfs_msg_open *payload = 
+										(struct replfs_msg_open*) get_payload(msg);
+	if (payload->fd == remote_fd) {
+		remote_fd = -1;
+		// printf("write log\n");
+		// printf("--------------------------\n");
+		// print_write_log(wlog);
+		if (wlog)
+			CVectorDispose(wlog);
+		wlog = NULL;
+		printf("sending close success\n");
+		send_close_success(payload->fd);
+	} else {
+		printf("sending close fail\n");	
+		send_close_fail(payload->fd);
+	}
 
 }
 
 void process_write(struct replfs_msg *msg, struct sockaddr_in client) 
 {
 	printf("processing write msg...\n"); 
+	struct write_block *payload = (struct write_block *) get_payload(msg);
+	if (payload->fd != remote_fd)
+		return;
+
+	void *dataload = ((char *)payload) + sizeof(struct write_block);
+	payload->data = malloc(payload->len);
+	memcpy(payload->data,dataload,payload->len);
+	CVectorAppend(wlog,payload);
+}
+
+void clear_write_log(int from_wid)
+{
+	if (from_wid == -1) {
+		CVectorDispose(wlog);
+		wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
+		return;
+	}
+	for(int i=0;i<CVectorCount(wlog);) {
+		struct write_block *wb;
+		wb = (struct write_block *) CVectorNth(wlog,i);
+		if (wb->wid < from_wid) 
+			CVectorRemove(wlog,i);
+		else
+			i++;
+	}
+}
+
+/* range is inclusive */
+void append_range(CVector *missing, int from, int to)
+{
+	for (int i=from; i<=to; i++) {
+		// printf("(appending %d) ",i);
+		CVectorAppend(missing,&i);
+	}
+}
+
+CVector *missing_writes(int from_wid, int to_wid)
+{
+	CVectorSort(wlog,(CVectorCmpElemFn) wbcmp);
+	CVector *missing = CVectorCreate(sizeof(int),0,NULL);
+	struct write_block *curwb = (struct write_block *)CVectorFirst(wlog);
+	while (curwb && curwb->wid <= to_wid)
+	{
+		// printf("curwb->wid: %d, from_wid: %d, to_wid: %d ",
+			// curwb->wid,from_wid,to_wid);
+		if (curwb->wid >= from_wid) {
+			if (curwb->wid > from_wid) 
+				append_range(missing,from_wid,curwb->wid-1);
+			from_wid = curwb->wid+1;
+		}
+		curwb = (struct write_block *) CVectorNext(wlog,curwb);
+		// printf("next: %p\n", curwb);
+	}
+	append_range(missing,from_wid,to_wid);
+	return missing;
 }
 
 void process_try_commit(struct replfs_msg *msg, struct sockaddr_in client) 
 {
-	printf("processing try-commit msg...\n"); 
+	printf("processing try-commit msg...\n");
+	struct replfs_msg_commit *payload = 
+							(struct replfs_msg_commit *) get_payload(msg);
+	
+	if (payload->fd != remote_fd)
+		return; 
+	
+	clear_write_log(payload->from_wid);
+	CVector *missing = missing_writes(payload->from_wid, payload->to_wid);
+	if (CVectorCount(missing) == 0) {
+		send_try_commit_success(payload->fd, payload->from_wid, payload->to_wid);
+	} else {
+		int n;
+		void * dataload = CVectorToArray(missing,&n);
+		send_try_commit_fail(payload->fd,payload->from_wid,
+																		 payload->to_wid,dataload,n);
+		free(dataload);
+	}
+
+	
+
 }
 
 void process_commit(struct replfs_msg *msg, struct sockaddr_in client) 
@@ -116,6 +216,15 @@ process_msg(struct replfs_msg * msg, struct sockaddr_in client)
 			//do nothing
 			break;
 		case MsgOpenFail:
+			//do nothing
+			break;
+		case MsgClose:
+			process_close(msg,client);
+			break;
+		case MsgCloseFail:
+			//do nothing;
+			break;
+		case MsgCloseSuccess:
 			//do nothing
 			break;
 		case MsgWrite:
@@ -169,6 +278,7 @@ main(int argc, char *argv[]) {
 
 	unsigned short port = DEFAULT_PORT;
 	int drop = 0;
+	strcpy(mountdir,".");
 
 	for (int i=1; i<argc-1;i++) 
 	{
@@ -179,7 +289,6 @@ main(int argc, char *argv[]) {
 
 		else if (!strncmp(argv[i],"-mount",MAX_ARG_LEN)) {
 			if (*argv[i+1] == '-') ERROR("invalid mount directory");
-			mountdir = malloc(strlen(argv[i+1])+1);
 			strcpy(mountdir,argv[++i]);
 		}
 
@@ -190,10 +299,11 @@ main(int argc, char *argv[]) {
 
 	}
 
+	strcat(mountdir,"/");
+
 	/* empty file */
-	rf.remote_fd = -1;
-	rf.local_fd = -1;
-	rf.cl = NULL;
+	remote_fd = -1;
+	wlog = NULL;
 
 
 	printf("launching file server...\n");
@@ -204,40 +314,9 @@ main(int argc, char *argv[]) {
 
 	run_server();
 
-	/************************
-	char *msg = "hello world!";
-	if (drop == 1) {
-		netSend(msg,strlen(msg));
-	}
-	else {
-
-		char buf[128];
-		char str_addr[128];
-		struct sockaddr_in sender;
-		memset(&sender,0,sizeof(struct sockaddr_in));
-		//sender.sin_family = AF_INET;
-
-		unsigned int msglen;
-		struct timeval deadline;
-		gettimeofday(&deadline,NULL);
-		deadline.tv_sec += 100;
-		if ((msglen = netRecv(buf,128,&sender,deadline)) > 0) 
-		{
-			buf[msglen] = '\0';
-			inet_ntop(AF_INET, &(sender.sin_addr), str_addr, INET_ADDRSTRLEN);
-			printf("msg: [%s], len:[%d] received from: [%s] \n",buf,msglen,
-																													str_addr);
-		}
-		else
-			printf("no income received.\n");
-	}
-	*************************/
-
 	printf("closing file server...\n");
 
 	netClose();
-	if (mountdir)
-		free(mountdir);
 
 }
 

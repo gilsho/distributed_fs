@@ -21,14 +21,28 @@
 #include "protocol.h"
 #include "cvector.h"
 #include "utils.h"
+#include "clist.h"
 
-#define TIMEOUT_CONNECT 1000
-#define TIMEOUT_OPEN    1000
-#define RETRY_CONNECT 5
-#define RETRY_OPEN    5
+#define TIMEOUT_CONNECT     1000
+#define TIMEOUT_OPEN        1000
+#define TIMEOUT_CLOSE       1000
+#define TIMEOUT_TRY_COMMIT  1000
+#define TIMEOUT_COMMIT      1000
+
+#define RETRY_CONNECT     10
+#define RETRY_TRY_COMMIT  50
+#define RETRY_COMMIT      10
+#define RETRY_OPEN        10
+#define RETRY_CLOSE       100
 
 CVector *servers;
-//CMap *mapserv;
+CVector *wlog;
+
+int widcount = 1;
+
+int next_wid(){
+  return widcount++;
+}
 
 
 void 
@@ -54,9 +68,21 @@ sockcmp(const void *a, const void *b)
 
   if (sa->sin_addr.s_addr > sb->sin_addr.s_addr)
     return 1;
-  else if (sa->sin_addr.s_addr < sb->sin_addr.s_addr)
+  if (sa->sin_addr.s_addr < sb->sin_addr.s_addr)
     return -1;
   
+  return 0;
+}
+
+int
+intcmp(const void *a, const void *b)
+{
+  int ia = *(int *)a;
+  int ib = *(int *)b;
+  if (ia > ib)
+    return 1;
+  if (ia < ib)
+    return -1;
   return 0;
 }
 
@@ -122,49 +148,107 @@ new_responder(CVector *responders, struct sockaddr_in *s)
   return (CVectorSearch(responders,s,sockcmp,0,false) == -1);
 }
 
+enum MsgHandlerResponse {
+  NeutralResponse,
+  FatalResponse,
+  SuccessReponse
+};
+
+typedef enum MsgHandlerResponse (* MsgHandlerFn)
+               (struct replfs_msg *msg, void *aux);
+
+enum MsgHandlerResponse open_handler(struct replfs_msg *msg, void *aux)
+{
+  struct replfs_msg_open *payload = (struct replfs_msg_open *)get_payload(msg);
+  int fd = *(int *)aux;
+
+  if (payload->fd != fd)
+    return NeutralResponse;
+
+  if (msg->msg_type == MsgOpenFail)
+    return FatalResponse;
+
+  if (msg->msg_type == MsgOpenSuccess && payload->fd == fd)
+    return SuccessReponse;
+  
+  return NeutralResponse;
+
+}
+
+enum MsgHandlerResponse close_handler(struct replfs_msg *msg, void *aux)
+{
+  struct replfs_msg_open *payload = (struct replfs_msg_open *)get_payload(msg);
+  int fd = *(int *)aux;
+
+  if (payload->fd != fd)
+    return NeutralResponse;
+
+  if (msg->msg_type == MsgCloseFail)
+    return FatalResponse;
+  
+  if (msg->msg_type == MsgCloseSuccess)
+    return SuccessReponse;
+  
+  return NeutralResponse;
+
+}
+
+enum MsgHandlerResponse try_commit_handler(struct replfs_msg *msg, void *aux)
+{
+  struct replfs_msg_commit_long *payload = 
+                (struct replfs_msg_commit_long *)get_payload(msg);
+  int *dataload = (int *) (((char *)payload) + 
+                            sizeof(struct replfs_msg_commit_long));
+  CVector *missing = (CVector *)aux;
+  
+  //what about checking fd? 
+  //if (payload->fd != )
+  //  return NeutralResponse;
+
+  if (msg->msg_type == MsgTryCommitSuccess)
+    return SuccessReponse;
+
+  if (msg->msg_type == MsgTryCommitFail) {
+    for (int i=0; i< payload->n; i++)
+      if (CVectorSearch(missing,&dataload[i],intcmp,0,false) == -1)
+        CVectorAppend(missing,&dataload[i]);
+    return FatalResponse;
+  }
+  
+  return NeutralResponse;
+
+}
+
 int 
-open_remote(int fd, char *filename, long timeout_ms)
+collect_responses(CVector *responders, MsgHandlerFn fn, 
+                  void *aux,long timeout_ms)
 {
   char buf[BUFFER_SIZE];
   struct replfs_msg *msg;
-  struct replfs_msg_open *payload;
-
-  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
-                                      CVectorCount(servers),NULL);
-
-  /* send open */
-  send_open(filename, fd);
-
-  /* collect reponses */
   struct timeval deadline,now;
   gettimeofday(&now,NULL);
   deadline = compute_deadline(now,timeout_ms);
 
   struct sockaddr_in s;
-  while (true)
-  {
+  while (true) {
     printf("%d servers reponded.\n",CVectorCount(responders));
     gettimeofday(&now,NULL);
-    if (CVectorCount(responders) >= CVectorCount(servers)) {
-      return NormalReturn;
-    }
-    
-    if (time_diff_ms(deadline,now) < 1) {
+    if (CVectorCount(responders) >= CVectorCount(servers))
+      return NormalReturn; 
+
+    if (time_diff_ms(deadline,now) < 1)
       return ErrorReturn;
-    }
     
     if (netRecv(buf, BUFFER_SIZE, &s, deadline) > 0) {
       msg = (struct replfs_msg *) buf;
-      payload = (struct replfs_msg_open *)get_payload(msg);
-      printf("payload->fd: %d, fd: %d, msg type: %d, MsgOpenSuccess: %d\n",
-              payload->fd, fd, msg->msg_type, MsgOpenSuccess);
-      if (msg->msg_type == MsgOpenSuccess && 
-          payload->fd == fd) {
-          printf("recieved open success\n");
+      enum MsgHandlerResponse mhr = fn(msg,aux);
+      if (mhr == SuccessReponse) {
+          printf("recieved successful response\n");
           if (known_server(&s) && new_responder(responders,&s)) {
-              printf("new response form known server\n");
+              printf("new response from known server\n");
               CVectorAppend(responders, &s);
-        } else if (msg->msg_type == MsgOpenFail && payload->fd == fd) {
+        } else if (mhr == FatalResponse) {
+          printf("received failure repsonse\n");
           return ErrorReturn;
         }
       }
@@ -172,6 +256,21 @@ open_remote(int fd, char *filename, long timeout_ms)
   }
   //execution thread shouldn't get here
   return ErrorReturn;
+}
+
+void retransmit(CVector *missing)
+{
+  printf("retransmitting %d writes.\n",CVectorCount(missing));
+  CVectorRemoveDuplicate(missing, intcmp);
+  for (int i=0; i<CVectorCount(missing); i++) {
+    struct write_block wb;
+    wb.wid = *(int *)CVectorNth(missing,i);
+    printf("retrying wid: %d\n", wb.wid);
+    int index;
+    if((index = CVectorSearch(wlog,&wb,(CVectorCmpElemFn) wbcmp,0,true)) > 0) {
+      send_write((struct write_block *) CVectorNth(wlog,index));
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,8 +299,7 @@ InitReplFs( unsigned short portNum, int packetLoss, int numServers ) {
     ERROR("connection failed");
 
   servers = CVectorCreate(sizeof(struct sockaddr_in), numServers,NULL);
-
-  int success = -1;
+  int success = ErrorReturn;
   for (int i=0; i<RETRY_CONNECT; i++)
     if ((success = locate_servers(numServers,TIMEOUT_CONNECT)) == NormalReturn)
       break;
@@ -211,6 +309,9 @@ InitReplFs( unsigned short portNum, int packetLoss, int numServers ) {
 
   printf("connection established.\n");
   print_servers();
+
+  /* set current file to NULL */
+  wlog = NULL;
 
   return( NormalReturn );  
 }
@@ -229,19 +330,31 @@ can only handle one open file at a time and the application is attempting to ope
 
 int
 OpenFile( char * fileName ) {
-  int fd;
 
   ASSERT( fileName );
 
   printf( "OpenFile: Opening File '%s'\n", fileName );
 
-  fd = open( fileName, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR );
+  int fd = open( fileName, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR );
 
   if ( fd < 0 )
     ERROR("unable to open the file locally");
 
-  if (open_remote(fd,fileName,TIMEOUT_OPEN) == ErrorReturn)
+  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+                                      CVectorCount(servers),NULL);
+  int success = ErrorReturn;
+  for (int i=0; i<RETRY_OPEN; i++) {
+    send_open(fileName, fd);
+    if ((success = collect_responses(responders,open_handler,
+                        (void *)&fd, TIMEOUT_OPEN)) == NormalReturn)
+      break;
+  }
+
+  CVectorDispose(responders);
+  if (success != NormalReturn)
     ERROR("unable to open file remotely");
+
+  wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
 
   printf("file opened successfully\n");
 
@@ -286,6 +399,19 @@ WriteBlock( int fd, char * buffer, int byteOffset, int blockSize ) {
     return(ErrorReturn);
   }
 
+  int wid = next_wid(fd);  
+  struct write_block wb;
+  wb.fd = fd;
+  wb.wid = wid;
+  wb.data = malloc(blockSize);
+  memcpy(wb.data,buffer,blockSize);
+  wb.offset = byteOffset;
+  wb.len = blockSize;
+  CVectorAppend(wlog,&wb);
+
+  send_write(&wb);
+
+
   return( bytesWritten );
 
 }
@@ -313,9 +439,46 @@ Commit( int fd ) {
 	/* - Check that all writes made it to the server(s) */
 	/****************************************************/
 
+  int first_wid = ((struct write_block *) CVectorNth(wlog,0))->wid;
+  int last_wid = ((struct write_block *)
+                      CVectorNth(wlog,CVectorCount(wlog)-1))->wid;
+
+  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+                                      CVectorCount(servers),NULL);
+  CVector *missing = CVectorCreate(sizeof(int),0,NULL);
+
+  int success = ErrorReturn;
+  for (int i=0; i<RETRY_TRY_COMMIT; i++) {
+    send_try_commit(fd, first_wid, last_wid);
+    if ((success = collect_responses(responders,try_commit_handler,
+                        missing, TIMEOUT_TRY_COMMIT)) == NormalReturn)
+      break;
+    retransmit(missing);
+  }
+  CVectorDispose(responders);
+
+  if (success != NormalReturn)
+    ERROR("first phase of commit failed");
+
+
 	/****************/
 	/* Commit Phase */
 	/****************/
+
+  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+                                      CVectorCount(servers),NULL);
+  success = ErrorReturn;
+  for (int i=0; i<RETRY_COMMIT; i++) {
+    send_commit(fd, first_wid, last_wid);
+    if ((success = collect_responses(responders,commit_handler,
+                        &fd, TIMEOUT_COMMIT)) == NormalReturn)
+      break;
+  CVectorDispose(responders);
+
+  if (success != NormalReturn)
+    ERROR("second phase of commit failed");
+
+  printf("commit successful\n");
 
   return( NormalReturn );
 
@@ -370,6 +533,24 @@ CloseFile( int fd ) {
     perror("Close");
     return(ErrorReturn);
   }
+
+  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+                                      CVectorCount(servers),NULL);
+
+  int success = ErrorReturn;
+  for (int i=0; i<RETRY_CLOSE; i++) {
+    send_close(fd);
+    if ((success = collect_responses(responders,close_handler,
+                        (void *)&fd, TIMEOUT_CLOSE)) == NormalReturn)
+      break;
+  }
+
+  /* attempt to commit */
+
+  if (success != NormalReturn)
+    ERROR("unable to close file remotely");
+
+  printf("file closed.\n");
 
   return(NormalReturn);
 }

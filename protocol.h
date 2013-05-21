@@ -11,6 +11,9 @@ enum msg_type_t {
 	MsgOpen,
 	MsgOpenFail,
 	MsgOpenSuccess,
+	MsgClose,
+	MsgCloseFail,
+	MsgCloseSuccess,
 	MsgWrite,
 	MsgTryCommit,
 	MsgTryCommitFail,
@@ -36,13 +39,6 @@ struct replfs_msg_open {
 	int fd;
 };
 
-struct replfs_msg_write {
-	int fd;
-	int offset;
-	int wlen;
-	int wid;
-};
-
 struct replfs_msg_commit {
 	int fd;
 	int from_wid;
@@ -51,11 +47,18 @@ struct replfs_msg_commit {
 
 struct replfs_msg_commit_long {
 	int fd;
+	int from_wid;
+	int to_wid;
 	int n;
-	int data[];
 };
 
-
+struct write_block {
+   int fd;
+   int wid;
+   int offset; 
+   int len;
+   char *data;
+};
 
 int checksum(struct replfs_msg *msg);
 
@@ -73,11 +76,17 @@ void send_open_fail(int fd);
 
 void send_open_success(int fd);
 
-void send_write(int fd, int offset, int wlen, void *data, int wid);
+void send_close(int fd);
+
+void send_close_fail(int fd);
+
+void send_close_success(int fd);
+
+void send_write(struct write_block *wb);
 
 void send_try_commit(int fd, int from_wid, int to_wid);
 
-void send_try_commit_fail(int fd, int wids[], int n);
+void send_try_commit_fail(int fd, int from_wid, int to_wid,int wids[], int n);
 
 void send_try_commit_success(int fd, int from_wid, int to_wid);
 
@@ -89,6 +98,8 @@ void send_commit_fail(int fd, int from_wid, int to_wid);
 
 void send_abort(int fd, int from_wid, int to_wid);
 
+int wbcmp(void *wba, void *wbb);
 
+void wbfree(void *wb);
 
 #endif

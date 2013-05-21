@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <assert.h>
 #include "clist.h"
 
 struct node *
@@ -12,21 +13,25 @@ node_from_data(void * data)
 					((char *) data) - offsetof(struct node, data);
 }
 
-void 
-CListInit(CList *cl)
+CList *
+CListInit(CListCleanupElemFn cleanupFn)
 {
-	cl = malloc(sizeof(struct list));
+	CList *cl = malloc(sizeof(struct list));
+	assert(cl);
+	cl->cleanupFn = cleanupFn;
 	cl->count = 0;
 	cl->head = NULL;
+	return cl;
 }
 
+/* assume list is sorted */
 void
 CListInsertSort(CList *cl, CListCmpElemFn compareFn, 
-							  void *data, size_t n) 
+							  void *data) 
 {
+	assert(cl);
 	struct node *nd = malloc(sizeof(struct node));
-	memcpy(&nd->data,data,n);
-	nd->sz = n;
+	nd->data = data;
 
 	/* empy list */
 	if (cl->head == NULL) {
@@ -61,6 +66,7 @@ CListInsertSort(CList *cl, CListCmpElemFn compareFn,
 /*data is unavailable after this operation*/
 void CListRemove(CList *cl, void *data)
 {
+	assert(cl);
 	struct node *nd = node_from_data(data);
 	if (nd->prev)
 		nd->prev->next = nd->next;
@@ -72,14 +78,17 @@ void CListRemove(CList *cl, void *data)
 	else
 		cl->tail = nd->prev;
 
+	cl->cleanupFn(nd);
 	free(nd);
 }
 
 void CListDestory(CList *cl)
 {
+	assert(cl);
 	for (struct node *cur=cl->head; cur != NULL; ) {
 		struct node *old = cur;
 		cur=cur->next;
+		cl->cleanupFn(old->data);
 		free(old);
 	}
 	free(cl);
@@ -88,12 +97,14 @@ void CListDestory(CList *cl)
 
 void *CListFirst(CList *cl)
 {
+	assert(cl);
 	if (!cl->head) return NULL;
 	return cl->head->data;
 }
 
 void *CListNext(CList *cl, void *data)
 {
+	assert(cl);
 	if (!data) return NULL;
 	struct node *nd = node_from_data(data);
 	if (!nd->next)	return NULL;

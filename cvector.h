@@ -221,6 +221,8 @@ int CVectorSearch(const CVector *v, const void *key, CVectorCmpElemFn comparefn,
  */
 void CVectorSort(CVector *v, CVectorCmpElemFn comparefn);
 
+void CVectorRemoveDuplicate(CVector *cv, CVectorCmpElemFn cmpfn);
+
 
 /**
  * Functions: CVectorFirst, CVectorNext
@@ -240,5 +242,7 @@ void CVectorSort(CVector *v, CVectorCmpElemFn comparefn);
  */
 void *CVectorFirst(CVector *cv);
 void *CVectorNext(CVector *cv, void *prev);
+
+void *CVectorToArray(CVector *cv, int *n);
 
 #endif

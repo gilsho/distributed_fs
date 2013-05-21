@@ -4,6 +4,7 @@
 
 #include <sys/time.h>
 #include "protocol.h"
+#include "cvector.h"
 
 #define ERROR(msg) {fprintf(stderr,msg); fprintf(stderr,"\n"); return(-1);}
 
@@ -18,5 +19,7 @@ struct timeval time_diff(struct timeval ta, struct timeval tb);
 long time_diff_ms(struct timeval ta, struct timeval tb);
 struct timeval time_sum(struct timeval ta, struct timeval tb);
 int checksum(struct replfs_msg *msg);
+
+void print_write_log(CVector *wlog);
 
 #endif

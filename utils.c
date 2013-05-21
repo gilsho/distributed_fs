@@ -1,5 +1,6 @@
-
+#include <stdio.h>
 #include "utils.h"
+#include "protocol.h"
 
 struct timeval time_diff(struct timeval ta, struct timeval tb)
 {
@@ -28,4 +29,13 @@ struct timeval time_sum(struct timeval ta, struct timeval tb)
   sum.tv_usec = sum_usec % MICROSEC_IN_SEC;
   sum.tv_sec = ta.tv_sec + tb.tv_sec + (sum_usec / MICROSEC_IN_SEC);
   return sum;
+}
+
+void print_write_log(CVector *wlog) 
+{
+  for (int i=0; i<CVectorCount(wlog); i++) {
+    struct write_block *wb = (struct write_block *)CVectorNth(wlog,i);
+    printf("wid: [%d], fd: [%d], offset: [%d], len: [%d] data:[%c]\n",
+            wb->wid,wb->fd,wb->offset,wb->len,wb->data[0]);
+  }
 }
