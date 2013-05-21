@@ -19,7 +19,6 @@
 #include "utils.h"
 #include "net.h"
 #include "protocol.h"
-#include "cmap.h"
 #include "cvector.h"
 #include "utils.h"
 
@@ -52,10 +51,12 @@ sockcmp(const void *a, const void *b)
 {
   struct sockaddr_in *sa = (struct sockaddr_in *)a;
   struct sockaddr_in *sb = (struct sockaddr_in *)b;
+
   if (sa->sin_addr.s_addr > sb->sin_addr.s_addr)
     return 1;
   else if (sa->sin_addr.s_addr < sb->sin_addr.s_addr)
     return -1;
+  
   return 0;
 }
 
@@ -66,6 +67,12 @@ compute_deadline(struct timeval now, long timeout_ms)
   timeout.tv_sec = timeout_ms / MILLISEC_IN_SEC;
   timeout.tv_usec = (timeout_ms % MILLISEC_IN_SEC) * MICROSEC_IN_MILLISEC;
   return time_sum(now,timeout);
+}
+
+bool
+known_server(struct sockaddr_in *s)
+{
+  return (CVectorSearch(servers,s,sockcmp,0,false) != -1);
 }
 
 int 
@@ -99,7 +106,7 @@ locate_servers(int numServers, long timeout_ms)
     if (netRecv(buf, BUFFER_SIZE, &s, deadline) > 0) {
       msg = (struct replfs_msg *) buf;
       if (msg->msg_type == MsgDiscoverAck) 
-        if (CVectorSearch(servers,&s,(CVectorCmpElemFn) sockcmp,0,false) == -1)
+        if (!known_server(&s))
           CVectorAppend(servers,&s);
     }
 
@@ -109,6 +116,12 @@ locate_servers(int numServers, long timeout_ms)
   return ErrorReturn;
 }
 
+bool
+new_responder(CVector *responders, struct sockaddr_in *s)
+{
+  return (CVectorSearch(responders,s,sockcmp,0,false) == -1);
+}
+
 int 
 open_remote(int fd, char *filename, long timeout_ms)
 {
@@ -116,8 +129,8 @@ open_remote(int fd, char *filename, long timeout_ms)
   struct replfs_msg *msg;
   struct replfs_msg_open *payload;
 
-  CMap *responders = CMapCreate(sizeof(struct sockaddr_in), sizeof(bool), 
-                                10, sockcmp, NULL);
+  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+                                      CVectorCount(servers),NULL);
 
   /* send open */
   send_open(filename, fd);
@@ -130,9 +143,9 @@ open_remote(int fd, char *filename, long timeout_ms)
   struct sockaddr_in s;
   while (true)
   {
-    printf("%d servers reponded.\n",CMapCount(responders));
+    printf("%d servers reponded.\n",CVectorCount(responders));
     gettimeofday(&now,NULL);
-    if (CMapCount(responders) >= CVectorCount(servers)) {
+    if (CVectorCount(responders) >= CVectorCount(servers)) {
       return NormalReturn;
     }
     
@@ -148,9 +161,9 @@ open_remote(int fd, char *filename, long timeout_ms)
       if (msg->msg_type == MsgOpenSuccess && 
           payload->fd == fd) {
           printf("recieved open success\n");
-          if(CVectorSearch(servers,&s,(CVectorCmpElemFn) sockcmp,0,false) != -1) {
-              bool response = true;
-              CMapPut(responders, &s,&response);
+          if (known_server(&s) && new_responder(responders,&s)) {
+              printf("new response form known server\n");
+              CVectorAppend(responders, &s);
         } else if (msg->msg_type == MsgOpenFail && payload->fd == fd) {
           return ErrorReturn;
         }
