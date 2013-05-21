@@ -28,6 +28,7 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #include <sys/stat.h>
 #include <errno.h>
 #include <unistd.h>
+#include <assert.h>
 
 #include "net.h"
 #include "utils.h"
@@ -41,12 +42,21 @@ And a client opens file "jane.txt" using OpenFile("jane.txt"), the server must c
 #define MAX_IDLE_TIME 24*60
 #define MAX_FILE_LEN 128
 
+int last_commit_wid;
 int remote_fd;
 char filepath[2*MAX_FILE_LEN];
 CVector *wlog;
 //struct sockaddr_in *owner;
 
 char mountdir[MAX_FILE_LEN];
+
+void
+reset_log()
+{
+	if (wlog)
+  	CVectorDispose(wlog);
+  wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
+}
 
 void 
 process_discover(struct sockaddr_in client)
@@ -62,25 +72,23 @@ process_open(struct replfs_msg *msg, struct sockaddr_in client)
 	printf("processing open msg...\n");
 	struct replfs_msg_open_long *payload = 
 										(struct replfs_msg_open_long *) get_payload(msg);
-	remote_fd = -1; //REMOVE ME!									
 	if (remote_fd == -1)		 {
+		assert(wlog);
 		//create the file
 		strcpy(filepath,mountdir);
 		strcat(filepath,payload->filename);
-		int local_fd = open(payload->filename,
+		int local_fd = open(filepath,
 		 										  O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR);
 		if (local_fd > 0) {
 			close(local_fd);
 			remote_fd = payload->fd;
-			wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
 			printf("sending open success\n");
 			send_open_success(payload->fd);
-		} else {
-			printf("sending open fail\n");
-			send_open_fail(payload->fd);
+			return;
 		}
 	}
-
+	printf("sending open fail\n");
+	send_open_fail(payload->fd);
 }
 
 void
@@ -94,9 +102,7 @@ process_close(struct replfs_msg *msg, struct sockaddr_in client)
 		// printf("write log\n");
 		// printf("--------------------------\n");
 		// print_write_log(wlog);
-		if (wlog)
-			CVectorDispose(wlog);
-		wlog = NULL;
+		reset_log();
 		printf("sending close success\n");
 		send_close_success(payload->fd);
 	} else {
@@ -108,6 +114,8 @@ process_close(struct replfs_msg *msg, struct sockaddr_in client)
 
 void process_write(struct replfs_msg *msg, struct sockaddr_in client) 
 {
+	if (remote_fd == -1 || !wlog)
+		return;
 	printf("processing write msg...\n"); 
 	struct write_block *payload = (struct write_block *) get_payload(msg);
 	if (payload->fd != remote_fd)
@@ -119,17 +127,13 @@ void process_write(struct replfs_msg *msg, struct sockaddr_in client)
 	CVectorAppend(wlog,payload);
 }
 
-void clear_write_log(int from_wid)
+void clear_write_log(int to_wid)
 {
-	if (from_wid == -1) {
-		CVectorDispose(wlog);
-		wlog = CVectorCreate(sizeof(struct write_block),0,wbfree);
-		return;
-	}
+	assert(wlog);
 	for(int i=0;i<CVectorCount(wlog);) {
 		struct write_block *wb;
 		wb = (struct write_block *) CVectorNth(wlog,i);
-		if (wb->wid < from_wid) 
+		if (wb->wid < to_wid) 
 			CVectorRemove(wlog,i);
 		else
 			i++;
@@ -147,6 +151,9 @@ void append_range(CVector *missing, int from, int to)
 
 CVector *missing_writes(int from_wid, int to_wid)
 {
+	if (remote_fd == -1 || !wlog)
+		return NULL;
+
 	CVectorSort(wlog,(CVectorCmpElemFn) wbcmp);
 	CVector *missing = CVectorCreate(sizeof(int),0,NULL);
 	struct write_block *curwb = (struct write_block *)CVectorFirst(wlog);
@@ -168,34 +175,111 @@ CVector *missing_writes(int from_wid, int to_wid)
 
 void process_try_commit(struct replfs_msg *msg, struct sockaddr_in client) 
 {
+	if (remote_fd == -1)
+		return;
+	assert(wlog);
+
+	struct replfs_msg_commit *payload = 
+							(struct replfs_msg_commit *) get_payload(msg);
+	
+	if (payload->fd != remote_fd)
+		return; 
+
 	printf("processing try-commit msg...\n");
+
+	if (last_commit_wid >= payload->to_wid) {
+		send_try_commit_success(payload->fd, payload->from_wid, payload->to_wid);
+		return;
+	}
+	
+	clear_write_log(payload->from_wid);
+	CVector *missing = missing_writes(payload->from_wid, payload->to_wid);
+	if (missing && CVectorCount(missing) == 0) {
+		send_try_commit_success(payload->fd, payload->from_wid, payload->to_wid);
+	} else {
+		int n;
+		void * dataload = missing ? CVectorToArray(missing,&n) : NULL;
+		send_try_commit_fail(payload->fd,payload->from_wid,
+																		 payload->to_wid,dataload,n);
+		free(dataload);
+	}
+}
+
+int execute_log(int fd, int from_wid, int to_wid)
+{
+	if (remote_fd == -1)
+		return ErrorReturn;
+	assert(wlog);
+	printf("executing log...\n");
+	CVectorSort(wlog,(CVectorCmpElemFn)wbcmp);
+	CVectorRemoveDuplicate(wlog,(CVectorCmpElemFn)wbcmp);
+
+	int local_fd = open(filepath, O_RDWR);
+	if (local_fd < 0) {
+		perror("unable to open file");
+		return ErrorReturn;
+	}
+	int success = NormalReturn;
+	struct write_block *wb = CVectorFirst(wlog);
+	while (wb != NULL) {
+		if (lseek(local_fd, wb->offset, SEEK_SET ) < 0 ) {
+			perror("seek failed");
+			success = ErrorReturn;
+			break;
+  	} if (write(local_fd,wb->data,wb->len) < 0) {
+  		perror("write failed");
+  		success = ErrorReturn;
+  		break;
+  	} 
+  	wb = CVectorNext(wlog,wb);
+	}
+	close(local_fd);
+	return success;
+}
+
+void process_commit(struct replfs_msg *msg, struct sockaddr_in client) 
+{
+	if (remote_fd == -1)
+		return;
+	assert(wlog);
+	printf("processing commit msg...\n"); 
 	struct replfs_msg_commit *payload = 
 							(struct replfs_msg_commit *) get_payload(msg);
 	
 	if (payload->fd != remote_fd)
 		return; 
 	
+	if (last_commit_wid >= payload->to_wid) {
+		send_commit_success(payload->fd, payload->from_wid, payload->to_wid);
+		return;
+	}
+
 	clear_write_log(payload->from_wid);
 	CVector *missing = missing_writes(payload->from_wid, payload->to_wid);
 	if (CVectorCount(missing) == 0) {
-		send_try_commit_success(payload->fd, payload->from_wid, payload->to_wid);
-	} else {
-		int n;
-		void * dataload = CVectorToArray(missing,&n);
-		send_try_commit_fail(payload->fd,payload->from_wid,
-																		 payload->to_wid,dataload,n);
-		free(dataload);
+		if (execute_log(payload->fd,payload->from_wid,payload->to_wid) 
+																														== NormalReturn) {
+			reset_log();
+			last_commit_wid = payload->to_wid;
+			send_commit_success(payload->fd, payload->from_wid, payload->to_wid);
+			return;
+		}
 	}
-
-	
-
+	send_commit_fail(payload->fd,payload->from_wid, payload->to_wid);
 }
 
-void process_commit(struct replfs_msg *msg, struct sockaddr_in client) 
+void
+process_abort(struct replfs_msg *msg, struct sockaddr_in client)
 {
-	printf("processing commit msg...\n"); 
+	if (remote_fd == -1)
+		return;
+	assert(wlog);
+	struct replfs_msg_commit *payload = 
+							(struct replfs_msg_commit *) get_payload(msg);
+	if (payload->fd != remote_fd)
+		return; 
+	clear_write_log(payload->to_wid);	
 }
-
 
 void
 process_msg(struct replfs_msg * msg, struct sockaddr_in client)
@@ -248,6 +332,9 @@ process_msg(struct replfs_msg * msg, struct sockaddr_in client)
 		case MsgCommitFail:
 			//do nothing
 			break;
+		case MsgAbort:
+			process_abort(msg,client);
+			break;
 		default:
 			printf("unknown msg type.\n");
 			break;
@@ -299,11 +386,13 @@ main(int argc, char *argv[]) {
 
 	}
 
+	mkdir(mountdir,S_IRWXU | S_IRUSR);
 	strcat(mountdir,"/");
 
 	/* empty file */
 	remote_fd = -1;
-	wlog = NULL;
+	last_commit_wid = -1;
+	reset_log();
 
 
 	printf("launching file server...\n");

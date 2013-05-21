@@ -9,11 +9,6 @@
 #ifndef __CLIENT_H__
 #define __CLIENT_H__
 
-enum {
-  NormalReturn = 0,
-  ErrorReturn = -1,
-};
-
 /* ------------------------------------------------------------------ */
 
 #ifdef ASSERT_DEBUG

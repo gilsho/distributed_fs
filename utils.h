@@ -6,6 +6,11 @@
 #include "protocol.h"
 #include "cvector.h"
 
+enum {
+  NormalReturn = 0,
+  ErrorReturn = -1,
+};
+
 #define ERROR(msg) {fprintf(stderr,msg); fprintf(stderr,"\n"); return(-1);}
 
 #define BUFFER_SIZE   1024

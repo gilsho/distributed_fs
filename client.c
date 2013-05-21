@@ -44,6 +44,13 @@ int next_wid(){
   return widcount++;
 }
 
+void
+reset_log()
+{
+  if (wlog)
+    CVectorDispose(wlog);
+  wlog = NULL;
+}
 
 void 
 print_servers()
@@ -201,7 +208,7 @@ enum MsgHandlerResponse try_commit_handler(struct replfs_msg *msg, void *aux)
                             sizeof(struct replfs_msg_commit_long));
   CVector *missing = (CVector *)aux;
   
-  //what about checking fd? 
+  //what about checking fd? and range?
   //if (payload->fd != )
   //  return NeutralResponse;
 
@@ -214,6 +221,24 @@ enum MsgHandlerResponse try_commit_handler(struct replfs_msg *msg, void *aux)
         CVectorAppend(missing,&dataload[i]);
     return FatalResponse;
   }
+  
+  return NeutralResponse;
+
+}
+
+enum MsgHandlerResponse commit_handler(struct replfs_msg *msg, void *aux)
+{
+  // struct replfs_msg_commit *payload = 
+  //               (struct replfs_msg_commit *)get_payload(msg);
+  //what about checking fd? and range?
+  //if (payload->fd != )
+  //  return NeutralResponse;
+
+  if (msg->msg_type == MsgCommitSuccess)
+    return SuccessReponse;
+
+  if (msg->msg_type == MsgCommitFail)
+    return FatalResponse;
   
   return NeutralResponse;
 
@@ -310,8 +335,7 @@ InitReplFs( unsigned short portNum, int packetLoss, int numServers ) {
   printf("connection established.\n");
   print_servers();
 
-  /* set current file to NULL */
-  wlog = NULL;
+  reset_log();
 
   return( NormalReturn );  
 }
@@ -425,6 +449,7 @@ Return value: -1 (ErrorReturn) MUST be returned if the client had outstanding ch
 (so the changes could not be committed). It MAY be returned if the client had no outstanding changes and a server is 
 unavailable. 
 
+
 */
 int
 Commit( int fd ) {
@@ -455,6 +480,7 @@ Commit( int fd ) {
       break;
     retransmit(missing);
   }
+  CVectorDispose(missing);
   CVectorDispose(responders);
 
   if (success != NormalReturn)
@@ -465,7 +491,7 @@ Commit( int fd ) {
 	/* Commit Phase */
 	/****************/
 
-  CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
+  responders = CVectorCreate(sizeof(struct sockaddr_in), 
                                       CVectorCount(servers),NULL);
   success = ErrorReturn;
   for (int i=0; i<RETRY_COMMIT; i++) {
@@ -473,6 +499,7 @@ Commit( int fd ) {
     if ((success = collect_responses(responders,commit_handler,
                         &fd, TIMEOUT_COMMIT)) == NormalReturn)
       break;
+  }
   CVectorDispose(responders);
 
   if (success != NormalReturn)
@@ -480,6 +507,7 @@ Commit( int fd ) {
 
   printf("commit successful\n");
 
+  reset_log();
   return( NormalReturn );
 
 }
@@ -502,9 +530,20 @@ Abort( int fd )
   printf( "Abort: FD=%d\n", fd );
 #endif
 
+
   /*************************/
   /* Abort the transaction */
   /*************************/
+
+  if (!wlog)
+    return NormalReturn;
+  
+  int first_wid = ((struct write_block *) CVectorNth(wlog,0))->wid;
+  int last_wid = ((struct write_block *)
+                      CVectorNth(wlog,CVectorCount(wlog)-1))->wid;
+
+  send_abort(fd,first_wid,last_wid);
+  reset_log();
 
   return(NormalReturn);
 }
@@ -533,6 +572,11 @@ CloseFile( int fd ) {
     perror("Close");
     return(ErrorReturn);
   }
+
+  if (wlog && CVectorCount(wlog) > 0)
+    Commit(fd);
+
+  reset_log();
 
   CVector *responders = CVectorCreate(sizeof(struct sockaddr_in), 
                                       CVectorCount(servers),NULL);
