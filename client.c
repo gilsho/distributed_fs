@@ -1,10 +1,3 @@
-/****************/
-/* Your Name	*/
-/* Date		*/
-/* CS 244B	*/
-/* Spring 2013	*/
-/****************/
-
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/stat.h>
