@@ -291,18 +291,6 @@ void retransmit(CVector *missing)
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*
-InitReplFs() gives your filesystem a chance to perform any startup tasks and informs your system which UDP port # it is to use. 
-It is also given the percentage (0 to 100) of packets that should be randomly dropped, on the client only, when they are received 
-from the network. (Servers have a similar argument to drop packets randomly on receipt; in no case should packets be randomly dropped 
-on transmit.) Finally, numServers specifies the number of servers that must be present in order to successfully commit changes to a 
-file (you can assume servers will not come and go while your client is running). Your system does not have to function correctly if 
-InitReplFs() is not called prior to using the other calls. 
-
-Return value: 0 (NormalReturn) 
-Return value: -1 on failure (ErrorReturn) MAY be returned if a server is unavailable. 
-*/
 int
 InitReplFs( unsigned short portNum, int packetLoss, int numServers ) {
 #ifdef DEBUG
